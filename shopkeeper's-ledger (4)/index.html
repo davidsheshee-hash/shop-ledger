@@ -1,0 +1,668 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>网店账单助手 (离线单文件版)</title>
+  
+  <!-- 
+    === 离线使用指南 (Offline Instructions) ===
+    本网页依赖以下 CDN 库。若需在无网络环境下使用，请先手动下载以下 .js 文件，
+    将它们保存到与 index.html 同一文件夹下，并修改下方 <script src="..."> 为本地文件名。
+    
+    1. tailwind.js      -> https://cdn.tailwindcss.com
+    2. react.js         -> https://unpkg.com/react@18/umd/react.development.js
+    3. react-dom.js     -> https://unpkg.com/react-dom@18/umd/react-dom.development.js
+    4. prop-types.js    -> https://unpkg.com/prop-types@15.8.1/prop-types.min.js
+    5. recharts.js      -> https://unpkg.com/recharts@2.12.0/umd/Recharts.js
+    6. babel.js         -> https://unpkg.com/@babel/standalone/babel.min.js
+  -->
+
+  <!-- 1. Styles (Tailwind CSS) -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            brand: {
+              50: '#f0f9ff',
+              100: '#e0f2fe',
+              500: '#0ea5e9',
+              600: '#0284c7',
+              900: '#0c4a6e',
+            }
+          }
+        }
+      }
+    }
+  </script>
+
+  <!-- 2. React Core -->
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+  
+  <!-- 3. Recharts Dependencies (Must load PropTypes first!) -->
+  <script crossorigin src="https://unpkg.com/prop-types@15.8.1/prop-types.min.js"></script>
+  
+  <!-- 4. Recharts Library -->
+  <script crossorigin src="https://unpkg.com/recharts@2.12.0/umd/Recharts.js"></script>
+
+  <!-- 5. Babel (Compiles JSX in browser) -->
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+  <style>
+    /* Custom scrollbar for better aesthetics */
+    ::-webkit-scrollbar {
+      width: 8px;
+      height: 8px;
+    }
+    ::-webkit-scrollbar-track {
+      background: #f1f5f9; 
+    }
+    ::-webkit-scrollbar-thumb {
+      background: #cbd5e1; 
+      border-radius: 4px;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background: #94a3b8; 
+    }
+  </style>
+<script type="importmap">
+{
+  "imports": {
+    "react": "https://aistudiocdn.com/react@^19.2.0",
+    "react-dom/": "https://aistudiocdn.com/react-dom@^19.2.0/",
+    "react/": "https://aistudiocdn.com/react@^19.2.0/",
+    "recharts": "https://aistudiocdn.com/recharts@^3.5.0"
+  }
+}
+</script>
+<link rel="stylesheet" href="/index.css">
+</head>
+<body class="bg-slate-50 text-slate-900 antialiased selection:bg-brand-100 selection:text-brand-900">
+  <div id="root"></div>
+
+  <!-- Application Logic -->
+  <script type="text/babel">
+    const { useState, useEffect, useMemo } = React;
+    const { 
+      BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
+      LineChart, Line, PieChart, Pie, Cell 
+    } = Recharts;
+
+    // --- CONSTANTS & DATA ---
+
+    const DEFAULT_CATEGORIES = [
+      // Income
+      { id: 'inc_sales', name: '商品销售', icon: '🛍️', color: '#10b981', type: 'income' },
+      { id: 'inc_service', name: '代购服务', icon: '🤝', color: '#34d399', type: 'income' },
+      { id: 'inc_refund', name: '平台退款', icon: '↩️', color: '#6ee7b7', type: 'income' },
+      { id: 'inc_other', name: '其他收入', icon: '💰', color: '#a7f3d0', type: 'income' },
+      
+      // Expense
+      { id: 'exp_stock', name: '进货成本', icon: '📦', color: '#f43f5e', type: 'expense' },
+      { id: 'exp_logistics', name: '快递物流', icon: '🚚', color: '#fb7185', type: 'expense' },
+      { id: 'exp_marketing', name: '广告推广', icon: '📣', color: '#fda4af', type: 'expense' },
+      { id: 'exp_packaging', name: '包装耗材', icon: '🎀', color: '#fecdd3', type: 'expense' },
+      { id: 'exp_platform', name: '平台扣点', icon: '🧾', color: '#e11d48', type: 'expense' },
+      { id: 'exp_other', name: '杂项支出', icon: '💸', color: '#be123c', type: 'expense' },
+    ];
+
+    // Helper: Currency Format (e.g., ¥1,234.56)
+    const formatCurrency = (amount) => {
+      return new Intl.NumberFormat('zh-CN', {
+        style: 'currency',
+        currency: 'CNY',
+        minimumFractionDigits: 2
+      }).format(amount);
+    };
+
+    // Helper: Date Format
+    const formatDate = (dateStr) => {
+      const date = new Date(dateStr);
+      return new Intl.DateTimeFormat('zh-CN', {
+        month: 'long',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit'
+      }).format(date);
+    };
+
+    // Helper: Get Icon
+    const getCategoryIcon = (categoryName) => {
+      const found = DEFAULT_CATEGORIES.find(c => c.name === categoryName);
+      if (found) return found.icon;
+      if (categoryName.includes('吃') || categoryName.includes('餐')) return '🍔';
+      if (categoryName.includes('车') || categoryName.includes('行')) return '🚕';
+      if (categoryName.includes('房') || categoryName.includes('租')) return '🏠';
+      return '✨';
+    };
+
+    // --- COMPONENTS ---
+
+    // 1. TransactionForm
+    const TransactionForm = ({ onAddTransaction }) => {
+      const [type, setType] = useState('income');
+      const [amount, setAmount] = useState('');
+      const [category, setCategory] = useState('');
+      const [description, setDescription] = useState('');
+
+      const availableCategories = DEFAULT_CATEGORIES.filter(c => c.type === type);
+
+      const handleSubmit = (e) => {
+        e.preventDefault();
+        if (!amount || !category) return;
+
+        onAddTransaction({
+          type,
+          amount: parseFloat(amount),
+          category,
+          description
+        });
+
+        setAmount('');
+        setDescription('');
+        setCategory('');
+      };
+
+      return (
+        <div className="bg-white rounded-3xl p-6 shadow-xl border border-slate-100 sticky top-4 z-20">
+          <h2 className="text-xl font-bold text-slate-800 mb-4 flex items-center gap-2">
+            <span className="text-2xl">📝</span> 记一笔
+          </h2>
+          
+          <form onSubmit={handleSubmit} className="space-y-4">
+            <div className="flex bg-slate-100 p-1 rounded-xl">
+              <button
+                type="button"
+                onClick={() => { setType('income'); setCategory(''); }}
+                className={`flex-1 py-2 rounded-lg text-sm font-semibold transition-all ${
+                  type === 'income' 
+                    ? 'bg-white text-emerald-600 shadow-sm' 
+                    : 'text-slate-500 hover:text-slate-700'
+                }`}
+              >
+                收入 💰
+              </button>
+              <button
+                type="button"
+                onClick={() => { setType('expense'); setCategory(''); }}
+                className={`flex-1 py-2 rounded-lg text-sm font-semibold transition-all ${
+                  type === 'expense' 
+                    ? 'bg-white text-rose-500 shadow-sm' 
+                    : 'text-slate-500 hover:text-slate-700'
+                }`}
+              >
+                支出 💸
+              </button>
+            </div>
+
+            <div>
+              <div className="relative">
+                <span className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 font-bold">¥</span>
+                <input
+                  type="number"
+                  step="0.01"
+                  value={amount}
+                  onChange={(e) => setAmount(e.target.value)}
+                  placeholder="0.00"
+                  className="w-full pl-10 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-brand-500 text-lg font-bold text-slate-800 placeholder-slate-300"
+                  required
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-4 gap-2">
+              {availableCategories.map((cat) => (
+                <button
+                  key={cat.id}
+                  type="button"
+                  onClick={() => setCategory(cat.name)}
+                  className={`flex flex-col items-center justify-center p-2 rounded-xl border transition-all ${
+                    category === cat.name
+                      ? type === 'income' ? 'border-emerald-500 bg-emerald-50 text-emerald-700' : 'border-rose-500 bg-rose-50 text-rose-700'
+                      : 'border-slate-100 bg-white hover:border-slate-300 text-slate-600'
+                  }`}
+                >
+                  <span className="text-xl mb-1">{cat.icon}</span>
+                  <span className="text-xs truncate w-full text-center">{cat.name}</span>
+                </button>
+              ))}
+            </div>
+
+            <input
+              type="text"
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              placeholder="备注 (选填)"
+              className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-brand-500 text-sm text-slate-700"
+            />
+
+            <button
+              type="submit"
+              className={`w-full py-3 rounded-xl font-bold text-white shadow-lg shadow-brand-500/30 active:scale-95 transition-transform ${
+                type === 'income' ? 'bg-emerald-500 hover:bg-emerald-600' : 'bg-rose-500 hover:bg-rose-600'
+              }`}
+            >
+              确认{type === 'income' ? '入账' : '支出'}
+            </button>
+          </form>
+        </div>
+      );
+    };
+
+    // 2. StatsOverview
+    const StatsOverview = ({ totalIncome, totalExpense }) => {
+      const netProfit = totalIncome - totalExpense;
+
+      return (
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
+          <div className="bg-emerald-500 rounded-3xl p-6 text-white shadow-lg shadow-emerald-500/20 relative overflow-hidden group">
+            <div className="absolute -right-4 -top-4 text-8xl opacity-10 rotate-12 group-hover:scale-110 transition-transform">🛍️</div>
+            <p className="text-emerald-100 text-sm font-medium mb-1">总收入</p>
+            <p className="text-3xl font-bold">{formatCurrency(totalIncome)}</p>
+          </div>
+
+          <div className="bg-rose-500 rounded-3xl p-6 text-white shadow-lg shadow-rose-500/20 relative overflow-hidden group">
+            <div className="absolute -right-4 -top-4 text-8xl opacity-10 rotate-12 group-hover:scale-110 transition-transform">💸</div>
+            <p className="text-rose-100 text-sm font-medium mb-1">总支出</p>
+            <p className="text-3xl font-bold">{formatCurrency(totalExpense)}</p>
+          </div>
+
+          <div className={`rounded-3xl p-6 text-white shadow-lg relative overflow-hidden group ${netProfit >= 0 ? 'bg-indigo-600 shadow-indigo-600/20' : 'bg-slate-700 shadow-slate-700/20'}`}>
+            <div className="absolute -right-4 -top-4 text-8xl opacity-10 rotate-12 group-hover:scale-110 transition-transform">✨</div>
+            <p className="text-indigo-100 text-sm font-medium mb-1">净利润</p>
+            <p className="text-3xl font-bold">{formatCurrency(netProfit)}</p>
+          </div>
+        </div>
+      );
+    };
+
+    // 3. AnalysisCharts
+    const COLORS_INCOME = ['#10b981', '#34d399', '#6ee7b7', '#a7f3d0'];
+    const COLORS_EXPENSE = ['#f43f5e', '#fb7185', '#fda4af', '#fecdd3', '#e11d48', '#be123c'];
+
+    const CustomTooltip = ({ active, payload, label }) => {
+      if (active && payload && payload.length) {
+        return (
+          <div className="bg-white/95 backdrop-blur-sm p-4 border border-slate-200 rounded-xl shadow-xl text-sm z-50">
+            <p className="font-bold text-slate-700 mb-2">{label}</p>
+            {payload.map((entry, index) => (
+              <p key={index} style={{ color: entry.color }} className="flex items-center gap-2">
+                <span>{entry.name}:</span>
+                <span className="font-mono font-bold">
+                   {typeof entry.value === 'number' ? `¥${entry.value.toFixed(2)}` : entry.value}
+                </span>
+              </p>
+            ))}
+          </div>
+        );
+      }
+      return null;
+    };
+
+    // Y Axis Format: ¥1.20k
+    const formatYAxis = (value) => {
+      if (value === 0) return '¥0.00';
+      return `¥${(value / 1000).toFixed(2)}k`;
+    };
+
+    // Pie Chart Label: 35.5%
+    const renderPieLabel = ({ cx, cy, midAngle, innerRadius, outerRadius, percent }) => {
+      const RADIAN = Math.PI / 180;
+      const radius = innerRadius + (outerRadius - innerRadius) * 0.5; 
+      const x = cx + radius * Math.cos(-midAngle * RADIAN); 
+      const y = cy + radius * Math.sin(-midAngle * RADIAN);
+
+      if (percent < 0.05) return null;
+
+      return (
+        <text x={x} y={y} fill="white" textAnchor="middle" dominantBaseline="central" fontSize={11} fontWeight="bold" style={{ textShadow: '0px 1px 2px rgba(0,0,0,0.5)' }}>
+          {`${(percent * 100).toFixed(1)}%`}
+        </text>
+      );
+    };
+
+    const AnalysisCharts = ({ transactions }) => {
+      const monthlyData = useMemo(() => {
+        const map = new Map();
+
+        transactions.forEach(t => {
+          const date = new Date(t.date);
+          const key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+          // Label format: YYYY年MM月 (e.g. 2023年05月)
+          const label = `${date.getFullYear()}年${String(date.getMonth() + 1).padStart(2, '0')}月`;
+
+          if (!map.has(key)) {
+            map.set(key, { monthKey: key, income: 0, expense: 0, profit: 0, label });
+          }
+          const stat = map.get(key);
+          if (t.type === 'income') {
+            stat.income += t.amount;
+          } else {
+            stat.expense += t.amount;
+          }
+          stat.profit = stat.income - stat.expense;
+        });
+
+        return Array.from(map.values()).sort((a, b) => a.monthKey.localeCompare(b.monthKey));
+      }, [transactions]);
+
+      const getCategoryStats = (type) => {
+        const map = new Map();
+        transactions.filter(t => t.type === type).forEach(t => {
+          map.set(t.category, (map.get(t.category) || 0) + t.amount);
+        });
+
+        return Array.from(map.entries()).map(([name, value]) => {
+          const def = DEFAULT_CATEGORIES.find(c => c.name === name);
+          return {
+            name,
+            value,
+            icon: def ? def.icon : getCategoryIcon(name),
+            color: def ? def.color : '#94a3b8'
+          };
+        }).sort((a, b) => b.value - a.value);
+      };
+
+      const incomeStats = useMemo(() => getCategoryStats('income'), [transactions]);
+      const expenseStats = useMemo(() => getCategoryStats('expense'), [transactions]);
+      const totalIncomeVal = incomeStats.reduce((acc, curr) => acc + curr.value, 0);
+      const totalExpenseVal = expenseStats.reduce((acc, curr) => acc + curr.value, 0);
+
+      if (transactions.length === 0) {
+        return (
+          <div className="flex flex-col items-center justify-center h-64 bg-white rounded-3xl p-8 text-slate-400 border border-slate-100 border-dashed">
+            <span className="text-4xl mb-4">📊</span>
+            <p>暂无数据，请先记一笔账吧！</p>
+          </div>
+        );
+      }
+
+      return (
+        <div className="space-y-8">
+          {/* Bar Chart: Income vs Expense */}
+          <div className="bg-white p-6 rounded-3xl shadow-sm border border-slate-100">
+            <h3 className="text-lg font-bold text-slate-800 mb-6 flex items-center gap-2">
+              <span>📅</span> 月度收支对比
+            </h3>
+            <div className="h-72">
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={monthlyData} margin={{ top: 10, right: 10, left: 20, bottom: 0 }}>
+                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#64748b" opacity={0.4} />
+                  <XAxis 
+                    dataKey="label" 
+                    axisLine={false} 
+                    tickLine={false} 
+                    tick={{ fill: '#475569', fontSize: 12, fontWeight: 500 }} 
+                    dy={10}
+                  />
+                  <YAxis 
+                    axisLine={false} 
+                    tickLine={false} 
+                    tick={{ fill: '#475569', fontSize: 12 }} 
+                    tickFormatter={formatYAxis}
+                    width={60}
+                  />
+                  <Tooltip content={<CustomTooltip />} cursor={{ fill: '#f8fafc' }} />
+                  <Legend iconType="circle" />
+                  <Bar dataKey="income" name="收入" fill="#10b981" radius={[4, 4, 0, 0]} barSize={20} />
+                  <Bar dataKey="expense" name="支出" fill="#f43f5e" radius={[4, 4, 0, 0]} barSize={20} />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+
+          {/* Line Chart: Net Profit */}
+          <div className="bg-white p-6 rounded-3xl shadow-sm border border-slate-100">
+            <h3 className="text-lg font-bold text-slate-800 mb-6 flex items-center gap-2">
+              <span>📈</span> 净利润趋势
+            </h3>
+            <div className="h-72">
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart data={monthlyData} margin={{ top: 10, right: 10, left: 20, bottom: 0 }}>
+                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#64748b" opacity={0.4} />
+                  <XAxis 
+                    dataKey="label" 
+                    axisLine={false} 
+                    tickLine={false} 
+                    tick={{ fill: '#475569', fontSize: 12, fontWeight: 500 }}
+                    dy={10}
+                  />
+                  <YAxis 
+                    axisLine={false} 
+                    tickLine={false} 
+                    tick={{ fill: '#475569', fontSize: 12 }}
+                    tickFormatter={formatYAxis}
+                    width={60}
+                  />
+                  <Tooltip content={<CustomTooltip />} />
+                  <Legend />
+                  <Line 
+                    type="monotone" 
+                    dataKey="profit" 
+                    name="净利润" 
+                    stroke="#4f46e5" 
+                    strokeWidth={3}
+                    dot={{ r: 4, strokeWidth: 2, fill: '#fff' }}
+                    activeDot={{ r: 6 }}
+                  />
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+
+          {/* Pie Charts */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+            <div className="bg-white p-6 rounded-3xl shadow-sm border border-slate-100 flex flex-col items-center">
+              <h3 className="text-lg font-bold text-slate-800 mb-4 w-full flex items-center gap-2">
+                <span>💰</span> 收入构成
+              </h3>
+              <div className="w-full h-64">
+                <ResponsiveContainer width="100%" height="100%">
+                  <PieChart>
+                    <Pie
+                      data={incomeStats}
+                      cx="50%"
+                      cy="50%"
+                      innerRadius={60}
+                      outerRadius={80}
+                      paddingAngle={5}
+                      dataKey="value"
+                      label={renderPieLabel}
+                      labelLine={false}
+                    >
+                      {incomeStats.map((entry, index) => (
+                        <Cell key={`cell-${index}`} fill={COLORS_INCOME[index % COLORS_INCOME.length]} />
+                      ))}
+                    </Pie>
+                    <Tooltip />
+                  </PieChart>
+                </ResponsiveContainer>
+              </div>
+              <div className="w-full flex flex-wrap gap-2 justify-center mt-4">
+                 {incomeStats.map((stat, i) => (
+                   <div key={i} className="flex items-center gap-1 text-xs text-slate-600 bg-slate-50 px-2 py-1 rounded-md border border-slate-100">
+                     <span className="w-2 h-2 rounded-full" style={{backgroundColor: COLORS_INCOME[i % COLORS_INCOME.length]}}></span>
+                     <span>{stat.icon} {stat.name} <span className="font-bold">{totalIncomeVal > 0 ? ((stat.value / totalIncomeVal) * 100).toFixed(1) : 0}%</span></span>
+                   </div>
+                 ))}
+              </div>
+            </div>
+
+            <div className="bg-white p-6 rounded-3xl shadow-sm border border-slate-100 flex flex-col items-center">
+              <h3 className="text-lg font-bold text-slate-800 mb-4 w-full flex items-center gap-2">
+                <span>💸</span> 支出构成
+              </h3>
+              <div className="w-full h-64">
+                <ResponsiveContainer width="100%" height="100%">
+                  <PieChart>
+                    <Pie
+                      data={expenseStats}
+                      cx="50%"
+                      cy="50%"
+                      innerRadius={60}
+                      outerRadius={80}
+                      paddingAngle={5}
+                      dataKey="value"
+                      label={renderPieLabel}
+                      labelLine={false}
+                    >
+                      {expenseStats.map((entry, index) => (
+                        <Cell key={`cell-${index}`} fill={COLORS_EXPENSE[index % COLORS_EXPENSE.length]} />
+                      ))}
+                    </Pie>
+                    <Tooltip />
+                  </PieChart>
+                </ResponsiveContainer>
+              </div>
+              <div className="w-full flex flex-wrap gap-2 justify-center mt-4">
+                 {expenseStats.map((stat, i) => (
+                   <div key={i} className="flex items-center gap-1 text-xs text-slate-600 bg-slate-50 px-2 py-1 rounded-md border border-slate-100">
+                     <span className="w-2 h-2 rounded-full" style={{backgroundColor: COLORS_EXPENSE[i % COLORS_EXPENSE.length]}}></span>
+                     <span>{stat.icon} {stat.name} <span className="font-bold">{totalExpenseVal > 0 ? ((stat.value / totalExpenseVal) * 100).toFixed(1) : 0}%</span></span>
+                   </div>
+                 ))}
+              </div>
+            </div>
+          </div>
+        </div>
+      );
+    };
+
+    // 4. TransactionList
+    const TransactionList = ({ transactions, onDelete }) => {
+      const sortedTransactions = [...transactions].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+
+      if (transactions.length === 0) return null;
+
+      return (
+        <div className="bg-white rounded-3xl p-6 shadow-sm border border-slate-100">
+          <h3 className="text-lg font-bold text-slate-800 mb-6 flex items-center gap-2">
+            <span>🕒</span> 近期账单
+          </h3>
+          
+          <div className="space-y-4">
+            {sortedTransactions.map((t) => (
+              <div key={t.id} className="group flex items-center justify-between p-4 hover:bg-slate-50 rounded-2xl border border-transparent hover:border-slate-100 transition-all">
+                <div className="flex items-center gap-4">
+                  <div className={`w-12 h-12 rounded-full flex items-center justify-center text-2xl ${
+                    t.type === 'income' ? 'bg-emerald-100' : 'bg-rose-100'
+                  }`}>
+                    {getCategoryIcon(t.category)}
+                  </div>
+                  <div>
+                    <p className="font-bold text-slate-800">{t.category}</p>
+                    <div className="flex items-center gap-2 text-xs text-slate-400">
+                      <span>{formatDate(t.date)}</span>
+                      {t.description && <span>• {t.description}</span>}
+                    </div>
+                  </div>
+                </div>
+                
+                <div className="flex items-center gap-4">
+                  <span className={`font-bold font-mono text-lg ${
+                    t.type === 'income' ? 'text-emerald-600' : 'text-rose-500'
+                  }`}>
+                    {t.type === 'income' ? '+' : '-'}{formatCurrency(t.amount)}
+                  </span>
+                  <button 
+                    onClick={() => onDelete(t.id)}
+                    className="opacity-0 group-hover:opacity-100 p-2 text-slate-300 hover:text-red-500 transition-all"
+                    title="删除"
+                  >
+                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      );
+    };
+
+    // 5. Main App
+    function App() {
+      const [transactions, setTransactions] = useState(() => {
+        try {
+          const saved = localStorage.getItem('shop_ledger_transactions');
+          return saved ? JSON.parse(saved) : [];
+        } catch (e) {
+          console.error("Failed to load transactions", e);
+          return [];
+        }
+      });
+
+      useEffect(() => {
+        localStorage.setItem('shop_ledger_transactions', JSON.stringify(transactions));
+      }, [transactions]);
+
+      const handleAddTransaction = (newTx) => {
+        const transaction = {
+          ...newTx,
+          id: crypto.randomUUID(),
+          date: new Date().toISOString()
+        };
+        setTransactions(prev => [...prev, transaction]);
+      };
+
+      const handleDeleteTransaction = (id) => {
+        if (window.confirm('确定要删除这条记录吗？')) {
+          setTransactions(prev => prev.filter(t => t.id !== id));
+        }
+      };
+
+      const totalIncome = transactions.filter(t => t.type === 'income').reduce((acc, curr) => acc + curr.amount, 0);
+      const totalExpense = transactions.filter(t => t.type === 'expense').reduce((acc, curr) => acc + curr.amount, 0);
+
+      return (
+        <div className="min-h-screen bg-slate-50 pb-20">
+          <header className="bg-white border-b border-slate-200 sticky top-0 z-30 shadow-sm">
+            <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <span className="text-3xl animate-bounce" style={{animationDuration: '2s'}}>🏪</span>
+                <h1 className="text-xl font-black bg-gradient-to-r from-brand-600 to-indigo-600 bg-clip-text text-transparent">
+                  网店账单助手
+                </h1>
+              </div>
+              <button 
+                onClick={() => {
+                  const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(transactions));
+                  const downloadAnchorNode = document.createElement('a');
+                  downloadAnchorNode.setAttribute("href",     dataStr);
+                  downloadAnchorNode.setAttribute("download", "ledger_backup.json");
+                  document.body.appendChild(downloadAnchorNode);
+                  downloadAnchorNode.click();
+                  downloadAnchorNode.remove();
+                }}
+                className="text-xs text-slate-500 hover:text-brand-600 underline"
+              >
+                备份数据
+              </button>
+            </div>
+          </header>
+
+          <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
+              <div className="lg:col-span-4 lg:relative">
+                <TransactionForm onAddTransaction={handleAddTransaction} />
+              </div>
+
+              <div className="lg:col-span-8 space-y-8">
+                <StatsOverview totalIncome={totalIncome} totalExpense={totalExpense} />
+                <AnalysisCharts transactions={transactions} />
+                <TransactionList transactions={transactions} onDelete={handleDeleteTransaction} />
+              </div>
+            </div>
+          </main>
+        </div>
+      );
+    }
+
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<App />);
+  </script>
+<script type="module" src="/index.tsx"></script>
+</body>
+</html>

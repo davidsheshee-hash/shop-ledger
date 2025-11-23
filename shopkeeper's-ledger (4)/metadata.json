@@ -1,0 +1,5 @@
+{
+  "name": "Shopkeeper's Ledger",
+  "description": "An aesthetic, offline-capable bookkeeping app for online store owners. Track income, expenses, and visualize trends with automatic category icons and detailed charts.",
+  "requestFramePermissions": []
+}
